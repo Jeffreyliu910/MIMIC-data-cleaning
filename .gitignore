@@ -1,0 +1,6 @@
+/*
+!/.gitignore
+!/data_cleaning/
+!/data_cleaning/**
+!/docs/
+!/docs/**
