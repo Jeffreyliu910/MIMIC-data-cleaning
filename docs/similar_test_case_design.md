@@ -11,21 +11,22 @@
 - 切分结果不依赖原 CSV 行顺序，并能通过固定规则完全复现。
 - `mimic_similar.csv` 不保留原始 `text` 字段，而是将其中指定的出院小结段落结构化为独立字段；
 - `mimic_test.csv` 不保留原始 `text` 字段，而是保留该字段中 `Discharge Medications:` 标题之前的原文。
+- 两个输出文件均原样保留源文件的 `long_title` 字段。
 
 这里的“偏差 5%”按 **5 个百分点**解释。例如 test 占比 15% 或 25% 均合格。
 
 ## 2. 当前数据基线
 
-本设计基于 2026-07-29 20:51:45 +0800 的源文件：
+本设计基于 2026-07-30 10:40:11 +0800 的源文件：
 
-- 文件大小：72,116,486 bytes；
-- SHA-256：`c887c2c96b3c2416f1f512bcbf8f39cff34524b283a1bb640847808aa21229b4`；
-- 字段：`subject_id`、`hadm_id`、`admittime`、`seq_num`、`icd_code`、`icd_version`、`text`；
+- 文件大小：72,444,422 bytes；
+- SHA-256：`81cecaf13f3e9646db7174367312df74ca396a7160aa4961fecfb6baeabfc06c`；
+- 字段：`subject_id`、`hadm_id`、`admittime`、`seq_num`、`icd_code`、`icd_version`、`long_title`、`text`；
 - 记录数：6,777；
 - `icd3` 组数：109；完整 ICD 编码数：479；
 - `icd_version` 全部为 10，`seq_num` 全部为 1；
 - `subject_id` 和 `hadm_id` 均无重复；
-- `icd_code` 与 `text` 均无空值，未发现完全重复的 `text`；
+- `icd_code`、`long_title` 与 `text` 均无空值，未发现完全重复的 `text`；
 - 当前编码没有小数点、大小写或首尾空白问题，但实现仍使用统一规范化规则。
 
 整体目标数量取最接近总数 20% 的整数：
@@ -263,12 +264,12 @@ score = SHA256("mimic2-similar-test-v1|" + split_key)
 CSV 表头必须为：
 
 ```csv
-subject_id,hadm_id,admittime,seq_num,icd_code,icd_version,chief_complaint,major_surgical_or_invasive_procedure,history_of_present_illness,past_medical_history,social_history,family_history,physical_exam,pertinent_results,brief_hospital_course,medications_on_admission,discharge_medications,discharge_disposition,discharge_diagnosis,discharge_condition,discharge_instructions
+subject_id,hadm_id,admittime,seq_num,icd_code,icd_version,long_title,chief_complaint,major_surgical_or_invasive_procedure,history_of_present_illness,past_medical_history,social_history,family_history,physical_exam,pertinent_results,brief_hospital_course,medications_on_admission,discharge_medications,discharge_disposition,discharge_diagnosis,discharge_condition,discharge_instructions
 ```
 
 其中：
 
-- `subject_id`、`hadm_id`、`admittime`、`seq_num`、`icd_code`、`icd_version` 直接复制自源文件的同名字段，字段值不得改写；
+- `subject_id`、`hadm_id`、`admittime`、`seq_num`、`icd_code`、`icd_version`、`long_title` 直接复制自源文件的同名字段，字段值不得改写；
 - 其余 15 个字段从同一条源记录的 `text` 字段中按第 8.1 节规则提取；
 - 不输出源文件的原始 `text` 字段。
 
@@ -277,12 +278,12 @@ subject_id,hadm_id,admittime,seq_num,icd_code,icd_version,chief_complaint,major_
 CSV 表头必须为：
 
 ```csv
-subject_id,hadm_id,seq_num,icd_code,icd_version,discharge_text_before_disposition
+subject_id,hadm_id,seq_num,icd_code,icd_version,long_title,discharge_text_before_disposition
 ```
 
 其中：
 
-- `subject_id`、`hadm_id`、`seq_num`、`icd_code`、`icd_version` 直接复制自源文件的同名字段，字段值不得改写；
+- `subject_id`、`hadm_id`、`seq_num`、`icd_code`、`icd_version`、`long_title` 直接复制自源文件的同名字段，字段值不得改写；
 - `discharge_text_before_disposition` 根据同一条源记录的 `text` 字段按第 8.2 节生成；
 - 按本设计，`mimic_test.csv` **不包含** `admittime` 和原始 `text` 字段。
 
@@ -409,7 +410,7 @@ subject_id,hadm_id,seq_num,icd_code,icd_version,discharge_text_before_dispositio
 8. 两个 CSV 的表头和字段顺序分别与第 7.1、7.2 节完全一致，且不包含未声明字段；
 9. 切分前后各 `icd3` 数量守恒：`input_count = similar_count + test_count`；
 10. 若输入文件 SHA-256、记录数或疾病分布变化，必须重新计算配额并更新质量基线后再验收。
-11. 从源文件复制的字段值不被规范化逻辑改写；`mimic_similar.csv` 中每个结构化字段均符合第 8.1 节的标题、边界、缺失值和换行保留规则。
+11. 从源文件复制的字段值不被规范化逻辑改写；尤其两个输出文件的 `long_title` 必须与对应源记录完全一致。`mimic_similar.csv` 中每个结构化字段均符合第 8.1 节的标题、边界、缺失值和换行保留规则。
 12. 对存在完整 `Discharge Medications:` 标题或已按第 8.1.3 节消歧为 `discharge_medications` 别名的每条 test 记录，`discharge_text_before_disposition` 必须等于该标题匹配起点之前的原始 `text` 精确前缀，且不得包含标题及其后的任何字符。
 13. 对既不存在完整标题、也不存在已消歧高置信度别名的 test 记录，`discharge_text_before_disposition` 必须与完整原始 `text` 完全一致，并在质量报告中逐条列出记录键。
 14. 质量报告至少包含 15 个目标段落各自的标准标题数、各别名接受数、歧义候选接受/拒绝数、最终空字段数，以及 `missing_discharge_medications_heading` 的数量和 `(subject_id, hadm_id)` 明细。

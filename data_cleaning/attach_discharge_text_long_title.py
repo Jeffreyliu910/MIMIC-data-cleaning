@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Attach discharge-note text to the selected first-admission dataset.
+"""Attach ICD diagnosis titles and discharge-note text to the selected dataset.
 
 Rows are matched on both ``subject_id`` and ``hadm_id``. This is an inner
 join: an input row is omitted when no matching discharge note exists or when
 every matching note has an empty ``text`` field. If an admission has multiple
 non-empty discharge notes, one output row is written for each matching note.
+
+``long_title`` is looked up in ``d_icd_diagnoses.csv`` using both
+``icd_code`` and ``icd_version``. An unmatched diagnosis is retained with an
+empty ``long_title`` and included in the summary printed after processing.
 
 Only Python's standard library is required. The discharge file is processed
 as a stream so the full multi-gigabyte file is never loaded into memory.
@@ -24,9 +28,12 @@ from typing import DefaultDict, Dict, Iterator, Optional, Sequence, TextIO, Tupl
 
 
 KEY_COLUMNS = ("subject_id", "hadm_id")
+ICD_KEY_COLUMNS = ("icd_code", "icd_version")
+LONG_TITLE_COLUMN = "long_title"
 DISCHARGE_TEXT_COLUMN = "text"
 
 AdmissionKey = Tuple[str, str]
+IcdKey = Tuple[str, str]
 CsvRow = Dict[str, str]
 
 
@@ -85,6 +92,12 @@ def parse_args() -> argparse.Namespace:
         help="discharge.csv or discharge.csv.gz.",
     )
     parser.add_argument(
+        "--diagnoses",
+        type=Path,
+        default=project_root / "mimic-iv-3.1" / "hosp" / "d_icd_diagnoses.csv",
+        help="ICD diagnosis dictionary CSV containing long_title.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=(
@@ -132,6 +145,11 @@ def admission_key(row: CsvRow) -> AdmissionKey:
     return row["subject_id"].strip(), row["hadm_id"].strip()
 
 
+def icd_key(row: CsvRow) -> IcdKey:
+    """Return a whitespace-normalized (icd_code, icd_version) lookup key."""
+    return row["icd_code"].strip(), row["icd_version"].strip()
+
+
 def open_csv(path: Path) -> TextIO:
     """Open a plain or gzip-compressed CSV as UTF-8 text."""
     if path.suffix.lower() == ".gz":
@@ -139,21 +157,65 @@ def open_csv(path: Path) -> TextIO:
     return path.open("r", encoding="utf-8", newline="")
 
 
+def load_icd_titles(diagnoses_path: Path) -> Dict[IcdKey, str]:
+    """Load long diagnosis titles keyed by both ICD code and version."""
+    titles: Dict[IcdKey, str] = {}
+
+    with open_csv(diagnoses_path) as handle:
+        reader = csv.DictReader(handle)
+        require_columns(
+            reader.fieldnames,
+            (*ICD_KEY_COLUMNS, LONG_TITLE_COLUMN),
+            diagnoses_path,
+        )
+
+        for row_number, row in enumerate(reader, start=2):
+            key = icd_key(row)
+            if not all(key):
+                raise ValueError(
+                    f"{diagnoses_path} has a blank icd_code or icd_version "
+                    f"at CSV record {row_number}"
+                )
+
+            title = row[LONG_TITLE_COLUMN]
+            title = title.strip() if title is not None else ""
+            existing = titles.get(key)
+            if existing is not None and existing != title:
+                raise ValueError(
+                    f"{diagnoses_path} contains conflicting long_title values "
+                    f"for icd_code={key[0]!r}, icd_version={key[1]!r}"
+                )
+            titles[key] = title
+
+    return titles
+
+
 def load_input_rows(
     input_path: Path,
-) -> tuple[list[str], DefaultDict[AdmissionKey, list[CsvRow]], int]:
+    icd_titles: Dict[IcdKey, str],
+) -> tuple[list[str], DefaultDict[AdmissionKey, list[CsvRow]], int, int]:
     """Load the comparatively small selected dataset, grouped by join key."""
     rows_by_key: DefaultDict[AdmissionKey, list[CsvRow]] = defaultdict(list)
     input_rows = 0
+    unmatched_icd_rows = 0
 
     with open_csv(input_path) as handle:
         reader = csv.DictReader(handle)
-        require_columns(reader.fieldnames, KEY_COLUMNS, input_path)
+        require_columns(
+            reader.fieldnames,
+            (*KEY_COLUMNS, *ICD_KEY_COLUMNS),
+            input_path,
+        )
         fieldnames = list(reader.fieldnames or ())
-        if DISCHARGE_TEXT_COLUMN in fieldnames:
+        generated_columns = [
+            column
+            for column in (LONG_TITLE_COLUMN, DISCHARGE_TEXT_COLUMN)
+            if column in fieldnames
+        ]
+        if generated_columns:
             raise ValueError(
-                f"{input_path} already contains a "
-                f"{DISCHARGE_TEXT_COLUMN!r} column"
+                f"{input_path} already contains generated column(s): "
+                f"{', '.join(generated_columns)}"
             )
 
         for row_number, row in enumerate(reader, start=2):
@@ -163,10 +225,26 @@ def load_input_rows(
                     f"{input_path} has a blank subject_id or hadm_id "
                     f"at CSV record {row_number}"
                 )
+            diagnosis_key = icd_key(row)
+            if not all(diagnosis_key):
+                raise ValueError(
+                    f"{input_path} has a blank icd_code or icd_version "
+                    f"at CSV record {row_number}"
+                )
+            long_title = icd_titles.get(diagnosis_key)
+            if long_title is None:
+                long_title = ""
+                unmatched_icd_rows += 1
+            row[LONG_TITLE_COLUMN] = long_title
             rows_by_key[key].append(row)
             input_rows += 1
 
-    return fieldnames, rows_by_key, input_rows
+    return (
+        [*fieldnames, LONG_TITLE_COLUMN],
+        rows_by_key,
+        input_rows,
+        unmatched_icd_rows,
+    )
 
 
 def iter_joined_rows(
@@ -255,15 +333,23 @@ def main() -> int:
     args = parse_args()
     input_path = args.input.resolve()
     discharge_path = args.discharge.resolve()
+    diagnoses_path = args.diagnoses.resolve()
     output_path = args.output.resolve()
 
     require_file(input_path)
     require_file(discharge_path)
-    if output_path in {input_path, discharge_path}:
-        raise ValueError("Output path must differ from both input paths")
+    require_file(diagnoses_path)
+    if output_path in {input_path, discharge_path, diagnoses_path}:
+        raise ValueError("Output path must differ from all input paths")
 
     set_max_csv_field_size()
-    input_fieldnames, rows_by_key, input_rows = load_input_rows(input_path)
+    icd_titles = load_icd_titles(diagnoses_path)
+    (
+        input_fieldnames,
+        rows_by_key,
+        input_rows,
+        unmatched_icd_rows,
+    ) = load_input_rows(input_path, icd_titles)
     output_rows, matched_keys, counters = write_joined_dataset(
         output_path,
         input_fieldnames,
@@ -276,6 +362,8 @@ def main() -> int:
 
     print(f"Output: {output_path}")
     print(f"Input rows: {input_rows:,}")
+    print(f"ICD dictionary entries loaded: {len(icd_titles):,}")
+    print(f"Input rows without a matching long_title: {unmatched_icd_rows:,}")
     print(f"Discharge rows scanned: {counters['discharge_rows_scanned']:,}")
     print(f"Input rows with non-empty discharge text: {matched_input_rows:,}")
     print(f"Input rows excluded: {excluded_input_rows:,}")

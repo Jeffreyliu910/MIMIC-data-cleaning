@@ -32,9 +32,9 @@ ALGORITHM_VERSION = "mimic2-similar-test-v1"
 TEXT_PARSER_VERSION = "mimic2-discharge-section-parser-v2"
 
 EXPECTED_SOURCE_SHA256 = (
-    "c887c2c96b3c2416f1f512bcbf8f39cff34524b283a1bb640847808aa21229b4"
+    "81cecaf13f3e9646db7174367312df74ca396a7160aa4961fecfb6baeabfc06c"
 )
-EXPECTED_SOURCE_SIZE = 72_116_486
+EXPECTED_SOURCE_SIZE = 72_444_422
 EXPECTED_SOURCE_ROWS = 6_777
 EXPECTED_GROUPS = 109
 EXPECTED_TEST_ROWS = 1_355
@@ -51,6 +51,7 @@ SOURCE_FIELDS = (
     "seq_num",
     "icd_code",
     "icd_version",
+    "long_title",
     "text",
 )
 IDENTIFIER_FIELDS = ("subject_id", "hadm_id")
@@ -101,6 +102,7 @@ SIMILAR_FIELDS = (
     "seq_num",
     "icd_code",
     "icd_version",
+    "long_title",
     *SECTION_FIELDS,
 )
 TEST_FIELDS = (
@@ -109,6 +111,7 @@ TEST_FIELDS = (
     "seq_num",
     "icd_code",
     "icd_version",
+    "long_title",
     "discharge_text_before_disposition",
 )
 
@@ -145,6 +148,7 @@ class SourceRecord:
     seq_num: str
     icd_code: str
     icd_version: str
+    long_title: str
     text: str
     icd3: str
     score: str
@@ -245,7 +249,7 @@ def parse_args() -> argparse.Namespace:
             output_dir
             / "first_time_seq1_dataset_icd_selected_with_discharge.csv"
         ),
-        help="Source CSV containing the seven designed fields.",
+        help="Source CSV containing the eight designed fields.",
     )
     parser.add_argument(
         "--similar-output",
@@ -404,6 +408,7 @@ def load_source(path: Path) -> tuple[list[SourceRecord], dict[str, Any]]:
                     seq_num=row["seq_num"],
                     icd_code=row["icd_code"],
                     icd_version=row["icd_version"],
+                    long_title=row["long_title"],
                     text=text,
                     icd3=code[:3],
                     score=stable_score(subject_id, hadm_id),
@@ -1491,6 +1496,7 @@ def build_outputs(
                         "seq_num": record.seq_num,
                         "icd_code": record.icd_code,
                         "icd_version": record.icd_version,
+                        "long_title": record.long_title,
                         **parsed.sections,
                     }
                     similar_writer.writerow(row)
@@ -1505,6 +1511,7 @@ def build_outputs(
                             "seq_num": record.seq_num,
                             "icd_code": record.icd_code,
                             "icd_version": record.icd_version,
+                            "long_title": record.long_title,
                             "discharge_text_before_disposition": prefix,
                         }
                     )
